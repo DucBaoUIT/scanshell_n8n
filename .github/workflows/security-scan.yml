@@ -22,7 +22,7 @@ jobs:
     steps:
 
       # ============================================================
-      # Checkout
+      # Checkout source
       # ============================================================
       - name: Checkout source
         uses: actions/checkout@v4
@@ -46,7 +46,6 @@ jobs:
           root = Path(".")
 
           secret_patterns = [
-
               (
                   "Private key",
                   re.compile(
@@ -183,7 +182,7 @@ jobs:
 
 
       # ============================================================
-      # Shell syntax validation
+      # Validate shell scripts
       # ============================================================
       - name: Validate shell scripts
         shell: bash
@@ -199,7 +198,7 @@ jobs:
 
 
       # ============================================================
-      # Python syntax validation
+      # Validate Python
       # ============================================================
       - name: Validate Python
         shell: bash
@@ -240,17 +239,22 @@ jobs:
 
       # ============================================================
       # Prepare clean test source
+      #
+      # scan-source.sh requires the source to be under:
+      # /www/wwwroot
       # ============================================================
       - name: Prepare test source
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -rf ci-test-source
+          TEST_ROOT="/www/wwwroot/ci-test-source"
 
-          mkdir -p ci-test-source
+          sudo rm -rf "${TEST_ROOT}"
 
-          cat > ci-test-source/test-clean.php <<'PHP'
+          sudo mkdir -p "${TEST_ROOT}"
+
+          sudo tee "${TEST_ROOT}/test-clean.php" > /dev/null <<'PHP'
           <?php
 
           function scanner_test_clean() {
@@ -258,7 +262,12 @@ jobs:
           }
           PHP
 
-          echo "Clean test source prepared."
+          sudo chown -R "$(id -u):$(id -g)" "${TEST_ROOT}"
+
+          echo "Test source prepared:"
+          echo "${TEST_ROOT}"
+
+          ls -la "${TEST_ROOT}"
 
 
       # ============================================================
@@ -269,15 +278,18 @@ jobs:
         run: |
           set -euo pipefail
 
+          TEST_ROOT="/www/wwwroot/ci-test-source"
+
           rm -rf ci-reports
 
           mkdir -p ci-reports
 
           echo "Running source security scanner..."
+          echo "Source: ${TEST_ROOT}"
 
           set +e
 
-          bash scan-source.sh ci-test-source \
+          bash scan-source.sh "${TEST_ROOT}" \
             > ci-reports/scan-source.json \
             2> ci-reports/scan-source.stderr
 
@@ -382,12 +394,15 @@ jobs:
           print(
               "======================================"
           )
+
           print(
               "       SECURITY SCANNER RESULT"
           )
+
           print(
               "======================================"
           )
+
           print()
 
           print(
@@ -441,6 +456,7 @@ jobs:
 
 
           print()
+
           print(
               "Critical :",
               critical
@@ -528,8 +544,8 @@ jobs:
       # ============================================================
       # Cleanup
       # ============================================================
-      - name: Cleanup
+      - name: Cleanup test source
         if: always()
         shell: bash
         run: |
-          rm -rf ci-test-source
+          sudo rm -rf /www/wwwroot/ci-test-source
