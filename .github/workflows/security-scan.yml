@@ -1,0 +1,137 @@
+name: Security Scan
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Check repository secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking repository for accidentally committed secrets..."
+
+          if grep -RniE \
+            'BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY|\
+AWS_SECRET_ACCESS_KEY[[:space:]]*=|\
+DISCORD_WEBHOOK|\
+api[_-]?key[[:space:]]*[:=][[:space:]]*["'\''][A-Za-z0-9_/+=-]{20,}|\
+password[[:space:]]*[:=][[:space:]]*["'\''][^"'\'']{8,}' \
+            --exclude-dir=.git \
+            --exclude-dir=data \
+            --exclude='*.md' \
+            .; then
+
+            echo "::error::Possible hard-coded secret detected."
+            exit 1
+          fi
+
+          echo "No obvious hard-coded secrets detected."
+
+      - name: Validate shell scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bash -n scan-source.sh
+          bash -n scan-database.sh
+
+          echo "Shell syntax validation passed."
+
+      - name: Install scanner dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 --version
+
+          if [ -f requirements.txt ]; then
+            python3 -m pip install --upgrade pip
+            python3 -m pip install -r requirements.txt
+          fi
+
+      - name: Prepare test source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p ci-test-source
+
+          cp scan-source.sh ci-test-source/
+
+          cat > ci-test-source/test-clean.php <<'PHP'
+          <?php
+
+          function scanner_test_clean() {
+              return 'clean';
+          }
+          PHP
+
+      - name: Run source security scanner
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p ci-reports
+
+          bash scan-source.sh ci-test-source \
+            > ci-reports/scan-source.json
+
+          python3 - <<'PY'
+          import json
+          import sys
+
+          path = "ci-reports/scan-source.json"
+
+          with open(path, "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          print("Scanner version :", data.get("version"))
+          print("Files scanned   :", data.get("files_scanned"))
+          print("Summary         :", data.get("summary"))
+
+          summary = data.get("summary", {})
+          critical = int(summary.get("critical", 0))
+
+          if critical > 0:
+              print()
+              print("CRITICAL FINDINGS:")
+              for finding in data.get("critical_findings", []):
+                  print(
+                      "-",
+                      finding.get("relative_file")
+                      or finding.get("file")
+                  )
+
+              print()
+              print("Security scan failed because Critical findings were detected.")
+              sys.exit(1)
+
+          print()
+          print("No Critical findings detected.")
+          PY
+
+      - name: Upload security report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-scan-report
+          path: ci-reports/
+          retention-days: 14
