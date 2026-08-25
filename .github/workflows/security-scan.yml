@@ -18,12 +18,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ============================================================
+      # Checkout
+      # ============================================================
       - name: Checkout source
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
-      # Check accidentally committed secrets
-      # ------------------------------------------------------------
+      # ============================================================
+      # Secret scanning
+      # ============================================================
       - name: Check repository secrets
         shell: bash
         run: |
@@ -45,37 +48,58 @@ jobs:
                       r"-----BEGIN (?:RSA|OPENSSH|EC|DSA|PGP) PRIVATE KEY-----"
                   ),
               ),
+
               (
                   "AWS access key",
                   re.compile(
                       r"\bAKIA[0-9A-Z]{16}\b"
                   ),
               ),
+
               (
                   "Discord webhook",
                   re.compile(
                       r"https://discord(?:app)?\.com/api/webhooks/[0-9]+/[A-Za-z0-9._-]+"
                   ),
               ),
+
               (
-                  "Generic API key",
+                  "Possible hard-coded API key",
                   re.compile(
-                      r"(?i)\bapi[_-]?key\s*[:=]\s*['\"][A-Za-z0-9_./+=-]{20,}['\"]"
+                      r"""(?ix)
+                      (?<![$\w])
+                      (?:api[_-]?key|secret[_-]?key|access[_-]?key)
+                      \s*
+                      (?:=|:)
+                      \s*
+                      ["']
+                      (?=
+                          [A-Za-z0-9_./+=\-]{20,}
+                          ["']
+                      )
+                      (?!change[_-]?me|example|placeholder|your[_-]?key|dummy|test|secret)
+                      [A-Za-z0-9_./+=\-]{20,}
+                      ["']
+                      """
                   ),
               ),
+
               (
                   "Possible hard-coded password",
                   re.compile(
                       r"""(?ix)
-                      \b
+                      (?<![$\w])
                       (?:password|passwd|pwd)
                       \s*
                       (?:=|:)
                       \s*
                       ["']
-                      (?=[^"']{12,})
-                      (?!change[_-]?me|your[_-]?password|example|placeholder|password123)
-                      [^"']+
+                      (?=
+                          [A-Za-z0-9!@#%^&*()_+=\-{}\[\]:;,.?/]{12,}
+                          ["']
+                      )
+                      (?!change[_-]?me|your[_-]?password|example|placeholder|password123|changeme|secret|test|dummy)
+                      [A-Za-z0-9!@#%^&*()_+=\-{}\[\]:;,.?/]{12,}
                       ["']
                       """
                   ),
@@ -87,6 +111,7 @@ jobs:
               "data",
               "node_modules",
               "__pycache__",
+              ".pytest_cache",
           }
 
           excluded_suffixes = {
@@ -95,6 +120,7 @@ jobs:
               ".sqlite",
               ".sqlite-wal",
               ".sqlite-shm",
+              ".pyc",
           }
 
           findings = []
@@ -103,11 +129,11 @@ jobs:
               if not path.is_file():
                   continue
 
-              parts = set(path.parts)
-
-              if parts & excluded_dirs:
+              # Skip runtime/generated directories.
+              if any(part in excluded_dirs for part in path.parts):
                   continue
 
+              # Skip known non-source/runtime files.
               if path.suffix.lower() in excluded_suffixes:
                   continue
 
@@ -121,7 +147,9 @@ jobs:
 
               for name, pattern in secret_patterns:
                   if pattern.search(text):
-                      findings.append((str(path), name))
+                      findings.append(
+                          (str(path), name)
+                      )
 
           if findings:
               print()
@@ -132,39 +160,44 @@ jobs:
                   print(f" - {kind}: {path}")
 
               print()
+
               sys.exit(1)
 
           print("No obvious hard-coded secrets detected.")
           PY
 
-      # ------------------------------------------------------------
-      # Validate shell scripts
-      # ------------------------------------------------------------
+      # ============================================================
+      # Shell syntax
+      # ============================================================
       - name: Validate shell scripts
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "Validating shell scripts..."
 
           bash -n scan-source.sh
           bash -n scan-database.sh
 
           echo "Shell syntax validation passed."
 
-      # ------------------------------------------------------------
-      # Validate Python
-      # ------------------------------------------------------------
+      # ============================================================
+      # Python syntax
+      # ============================================================
       - name: Validate Python
         shell: bash
         run: |
           set -euo pipefail
 
+          echo "Validating Python..."
+
           python3 -m py_compile scanner-api.py
 
           echo "Python syntax validation passed."
 
-      # ------------------------------------------------------------
-      # Install dependencies
-      # ------------------------------------------------------------
+      # ============================================================
+      # Dependencies
+      # ============================================================
       - name: Install scanner dependencies
         shell: bash
         run: |
@@ -175,11 +208,13 @@ jobs:
           if [ -f requirements.txt ]; then
             python3 -m pip install --upgrade pip
             python3 -m pip install -r requirements.txt
+          else
+            echo "requirements.txt not found, skipping dependency installation."
           fi
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Prepare clean test source
-      # ------------------------------------------------------------
+      # ============================================================
       - name: Prepare test source
         shell: bash
         run: |
@@ -198,9 +233,9 @@ jobs:
 
           echo "Clean test source prepared."
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Run source scanner
-      # ------------------------------------------------------------
+      # ============================================================
       - name: Run source security scanner
         shell: bash
         run: |
@@ -209,6 +244,8 @@ jobs:
           rm -rf ci-reports
           mkdir -p ci-reports
 
+          echo "Running source security scanner..."
+
           bash scan-source.sh ci-test-source \
             > ci-reports/scan-source.json
 
@@ -216,9 +253,13 @@ jobs:
           import json
           import sys
 
-          path = "ci-reports/scan-source.json"
+          report_path = "ci-reports/scan-source.json"
 
-          with open(path, "r", encoding="utf-8") as f:
+          with open(
+              report_path,
+              "r",
+              encoding="utf-8"
+          ) as f:
               data = json.load(f)
 
           print()
@@ -227,26 +268,54 @@ jobs:
           print("======================================")
           print()
 
-          print("Scanner version :", data.get("version"))
-          print("Files scanned   :", data.get("files_scanned"))
-          print("Summary         :", data.get("summary"))
+          print(
+              "Scanner version :",
+              data.get("version")
+          )
+
+          print(
+              "Files scanned   :",
+              data.get("files_scanned")
+          )
+
+          print(
+              "Summary         :",
+              data.get("summary")
+          )
 
           summary = data.get("summary", {})
 
-          critical = int(summary.get("critical", 0))
-          high = int(summary.get("high", 0))
-          medium = int(summary.get("medium", 0))
+          critical = int(
+              summary.get("critical", 0)
+          )
+
+          high = int(
+              summary.get("high", 0)
+          )
+
+          medium = int(
+              summary.get("medium", 0)
+          )
+
+          low = int(
+              summary.get("low", 0)
+          )
 
           print()
-          print(f"Critical : {critical}")
-          print(f"High     : {high}")
-          print(f"Medium   : {medium}")
+          print("Critical :", critical)
+          print("High     :", high)
+          print("Medium   :", medium)
+          print("Low      :", low)
           print()
 
           if critical > 0:
               print("CRITICAL FINDINGS:")
+              print()
 
-              findings = data.get("critical_findings", [])
+              findings = data.get(
+                  "critical_findings",
+                  []
+              )
 
               for finding in findings:
                   filename = (
@@ -265,13 +334,18 @@ jobs:
 
               sys.exit(1)
 
-          print("No Critical findings detected.")
-          print("Security scan passed.")
+          print(
+              "No Critical findings detected."
+          )
+
+          print(
+              "Security scan passed."
+          )
           PY
 
-      # ------------------------------------------------------------
-      # Upload scan report
-      # ------------------------------------------------------------
+      # ============================================================
+      # Upload security report
+      # ============================================================
       - name: Upload security report
         if: always()
         uses: actions/upload-artifact@v4
@@ -280,9 +354,9 @@ jobs:
           path: ci-reports/
           retention-days: 14
 
-      # ------------------------------------------------------------
-      # Cleanup test files
-      # ------------------------------------------------------------
+      # ============================================================
+      # Cleanup
+      # ============================================================
       - name: Cleanup
         if: always()
         shell: bash
