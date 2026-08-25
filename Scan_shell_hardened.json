@@ -1,0 +1,317 @@
+{
+  "name": "Scan_shell",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "f6df9f7a-2d4e-46e0-9619-6b2a7e41cf51",
+      "name": "Merge Scan Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1808,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DISCORD_WEBHOOK_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  {\n    username: $json.username,\n    content: $json.content,\n    embeds: $json.embeds\n  }\n}}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "a6d77d6d-3844-43c8-a703-e3c139c6e328",
+      "name": "Send Discord Report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2400,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "formTitle": "aaPanel Security Shell Scanner",
+        "formDescription": "Read-only source and database security scan. No files or database records are modified.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Source folder",
+              "placeholder": "/www/wwwroot/example.com",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Database password",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Database name",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {
+          "buttonLabel": "Start Security Scan"
+        }
+      },
+      "id": "c2992ec1-d774-4c25-bce9-67c99c3c6f56",
+      "name": "Start Scan Form1",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [
+        928,
+        384
+      ],
+      "webhookId": "748bfa3c-7dab-455f-bdc6-0f2df87ad5d3"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.scanner_api_url + '/scan/source' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Scanner-Token",
+              "value": "={{ $env.SCANNER_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { source_path: $json.source_folder } }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "0e970a67-92db-46cc-aa93-873312e3fd5c",
+      "name": "Scan Source",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1520,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.scanner_api_url + '/scan/database' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Scanner-Token",
+              "value": "={{ $env.SCANNER_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  db_host: \"172.18.0.1\",\n  db_port: 3306,\n  db_user: \"shell_scanner\",\n  db_name: $json.database_name,\n  db_password: $json.database_password\n} }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "cc3cf1dd-ffd6-4ab2-9b50-37fa8b545af0",
+      "name": "Scan Database",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1520,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nconst source =\n  items.find(i => i.json.scanner === 'scan-source.sh')?.json ?? {};\n\nconst db =\n  items.find(i => i.json.scanner === 'scan-database.sh')?.json ?? {};\n\nconst ss = source.summary ?? {};\nconst ds = db.summary ?? {};\n\nconst sourceFindings = Array.isArray(source.critical_findings)\n  ? source.critical_findings\n  : (\n      Array.isArray(source.findings)\n        ? source.findings.filter(f => f.severity === 'critical')\n        : []\n    );\n\nconst dbFindings = Array.isArray(db.critical_findings)\n  ? db.critical_findings\n  : (\n      Array.isArray(db.findings)\n        ? db.findings.filter(f => f.severity === 'critical')\n        : []\n    );\n\nconst criticalFindings = [\n  ...sourceFindings,\n  ...dbFindings\n];\n\nconst totalCritical = criticalFindings.length;\n\nconst sourceName =\n  source.source ??\n  $node['Validate Inputs']?.json?.source_folder ??\n  'unknown';\n\nconst clip = (value, max = 900) => {\n  const s = String(value ?? '');\n  return s.length > max\n    ? s.slice(0, max) + '…'\n    : s;\n};\n\n\n// ------------------------------------------------------------\n// Critical findings text\n// ------------------------------------------------------------\n\nconst criticalText = criticalFindings\n  .map((f, index) => {\n\n    const file =\n      f.relative_file ??\n      f.file ??\n      'unknown';\n\n    const score =\n      f.score !== undefined\n        ? `Score: **${f.score}**`\n        : '';\n\n    const confidence =\n      f.confidence\n        ? `Confidence: **${f.confidence}**`\n        : '';\n\n    const reason =\n      f.reason\n        ? `\\n${clip(f.reason, 500)}`\n        : '';\n\n    return (\n      `${index + 1}. **${clip(file, 250)}**\\n` +\n      `${score} ${confidence}` +\n      `${reason}`\n    );\n  })\n  .join('\\n\\n');\n\n\n// ------------------------------------------------------------\n// Database critical findings\n// ------------------------------------------------------------\n\nconst databaseCriticalText = dbFindings\n  .map((f, index) => {\n\n    const target =\n      [f.database, f.table, f.column]\n        .filter(Boolean)\n        .join('.') ||\n      f.relative_file ||\n      f.file ||\n      f.type ||\n      'unknown';\n\n    return (\n      `${index + 1}. **${clip(target, 250)}**` +\n      `${f.reason ? `\\n${clip(f.reason, 500)}` : ''}`\n    );\n  })\n  .join('\\n\\n');\n\n\n// ------------------------------------------------------------\n// Discord fields\n// ------------------------------------------------------------\n\nconst fields = [];\n\nfields.push({\n  name: '🚨 Critical Files',\n  value: totalCritical > 0\n    ? clip(criticalText, 1024)\n    : 'None',\n  inline: false\n});\n\n\n// Database critical findings, nếu có\nif (databaseCriticalText) {\n  fields.push({\n    name: '🗄️ Database Critical Findings',\n    value: clip(databaseCriticalText, 1024),\n    inline: false\n  });\n}\n\n\n// Scanner statistics\nfields.push({\n  name: '📊 Scan Summary',\n  value:\n    `Files scanned: **${source.files_scanned ?? 0}**\\n` +\n    `Critical: **${ss.critical ?? totalCritical}**\\n` +\n    `High: **${ss.high ?? 0}**\\n` +\n    `Medium: **${ss.medium ?? 0}**\\n` +\n    `Low: **${ss.low ?? 0}**`,\n  inline: true\n});\n\n\n// Database summary\nfields.push({\n  name: '🗄️ Database Scan',\n  value:\n    `Total: **${ds.total ?? 0}**\\n` +\n    `Critical: **${ds.critical ?? 0}**\\n` +\n    `High: **${ds.high ?? 0}**\\n` +\n    `Medium: **${ds.medium ?? 0}**\\n` +\n    `Low: **${ds.low ?? 0}**`,\n  inline: true\n});\n\n\n// ------------------------------------------------------------\n// Discord response\n// ------------------------------------------------------------\n\nreturn [\n  {\n    json: {\n      username: 'aaPanel Security Scanner',\n\n      embeds: [\n        {\n          title:\n            totalCritical > 0\n              ? '🔴 Security Scan — CRITICAL FINDINGS'\n              : '🟢 Security Scan — CLEAN',\n\n          description:\n            `**Source:** \\`${clip(sourceName, 300)}\\`\\n` +\n            `**Mode:** READ-ONLY — no files or database records were modified.`,\n\n          color:\n            totalCritical > 0\n              ? 15548997\n              : 5763719,\n\n          fields,\n\n          footer: {\n            text:\n              `aaPanel Security Scanner v${source.version ?? '4.1'} • READ-ONLY`\n          },\n\n          timestamp:\n            new Date().toISOString()\n        }\n      ]\n    }\n  }\n];"
+      },
+      "id": "6c9f09fb-125f-4dc6-95d6-06e780eb2ed3",
+      "name": "Build Discord Embed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2112,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const source = String(\n  $json['Source folder'] ??\n  $json['source_folder'] ??\n  ''\n).trim();\n\nconst dbName = String(\n  $json['Database name'] ??\n  $json['database_name'] ??\n  ''\n).trim();\n\nconst password = String(\n  $json['Database password'] ??\n  $json['database_password'] ??\n  ''\n);\n\nif (!source) {\n  throw new Error('Source folder is required.');\n}\n\nif (!source.startsWith('/www/wwwroot/')) {\n  throw new Error(\n    'Source folder must be below /www/wwwroot/.'\n  );\n}\n\nif (!dbName) {\n  throw new Error('Database name is required.');\n}\n\nif (!/^[A-Za-z0-9_$-]+$/.test(dbName)) {\n  throw new Error('Invalid database name.');\n}\n\nif (!password) {\n  throw new Error('Database password is required.');\n}\n\nreturn [{\n  json: {\n    source_folder: source,\n    database_name: dbName,\n    database_password: password,\n    scanner_api_url: 'http://scanner-api:8080',\n    scan_started_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "9e299c7d-ce9a-4ce2-976a-7cd46d77beef",
+      "name": "Validate Inputs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1216,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nconst source =\n  items.find(i => i.json.scanner === 'scan-source.sh')?.json ?? {};\n\nconst db =\n  items.find(i => i.json.scanner === 'scan-database.sh')?.json ?? {};\n\nconst sourceFindings = Array.isArray(source.findings)\n  ? source.findings\n  : [];\n\nconst dbFindings = Array.isArray(db.findings)\n  ? db.findings\n  : [];\n\n\n// ------------------------------------------------------------\n// Chỉ đưa findings KHÔNG phải critical vào TXT\n// ------------------------------------------------------------\n\nconst findings = [\n  ...sourceFindings,\n  ...dbFindings\n].filter(f => f.severity !== 'critical');\n\n\n// ------------------------------------------------------------\n// Sort: High -> Medium -> Low\n// ------------------------------------------------------------\n\nconst severityOrder = {\n  high: 1,\n  medium: 2,\n  low: 3\n};\n\nfindings.sort(\n  (a, b) =>\n    (severityOrder[a.severity] ?? 99) -\n    (severityOrder[b.severity] ?? 99)\n);\n\n\n// ------------------------------------------------------------\n// Source\n// ------------------------------------------------------------\n\nconst sourceName =\n  source.source ??\n  'unknown';\n\n\n// ------------------------------------------------------------\n// Header\n// ------------------------------------------------------------\n\nconst lines = [];\n\nlines.push(\n  'aaPanel Security Scanner - Detailed Findings'\n);\n\nlines.push(\n  '============================================================'\n);\n\nlines.push(\n  `Source: ${sourceName}`\n);\n\nlines.push(\n  `Scanner: ${source.scanner ?? 'scan-source.sh'}`\n);\n\nlines.push(\n  `Version: ${source.version ?? 'unknown'}`\n);\n\nlines.push(\n  `Mode: ${source.mode ?? 'read-only'}`\n);\n\nlines.push(\n  `Scanned at: ${source.scanned_at ?? new Date().toISOString()}`\n);\n\nlines.push('');\n\nlines.push(\n  'IMPORTANT:'\n);\n\nlines.push(\n  'This file contains non-critical findings for manual review.'\n);\n\nlines.push(\n  'Critical findings are reported separately to Discord.'\n);\n\nlines.push('');\n\n\n// ------------------------------------------------------------\n// Summary\n// ------------------------------------------------------------\n\nlines.push(\n  'SUMMARY'\n);\n\nlines.push(\n  '------------------------------------------------------------'\n);\n\nlines.push(\n  `Total findings: ${findings.length}`\n);\n\nlines.push(\n  `High: ${findings.filter(f => f.severity === 'high').length}`\n);\n\nlines.push(\n  `Medium: ${findings.filter(f => f.severity === 'medium').length}`\n);\n\nlines.push(\n  `Low: ${findings.filter(f => f.severity === 'low').length}`\n);\n\nlines.push('');\n\n\n// ------------------------------------------------------------\n// Findings\n// ------------------------------------------------------------\n\nif (findings.length === 0) {\n\n  lines.push(\n    'No non-critical findings.'\n  );\n\n} else {\n\n  findings.forEach((f, index) => {\n\n    lines.push(\n      `#${index + 1} [${String(f.severity ?? 'unknown').toUpperCase()}]`\n    );\n\n    lines.push(\n      `File: ${f.relative_file ?? f.file ?? 'unknown'}`\n    );\n\n    if (f.line) {\n      lines.push(\n        `Line: ${f.line}`\n      );\n    }\n\n    lines.push(\n      `Type: ${f.type ?? 'unknown'}`\n    );\n\n    lines.push(\n      `Rule: ${f.rule ?? 'unknown'}`\n    );\n\n    lines.push(\n      `Confidence: ${f.confidence ?? 'unknown'}`\n    );\n\n    lines.push(\n      `Score: ${f.score ?? 0}`\n    );\n\n    lines.push(\n      `Reason: ${f.reason ?? ''}`\n    );\n\n    lines.push(\n      `Evidence: ${f.match ?? ''}`\n    );\n\n    lines.push(\n      '------------------------------------------------------------'\n    );\n\n  });\n\n}\n\n\n// ------------------------------------------------------------\n// Create TXT\n// ------------------------------------------------------------\n\nconst content = lines.join('\\n');\n\nconst filename =\n  `security-findings-${new Date()\n    .toISOString()\n    .replace(/[:.]/g, '-')\n  }.txt`;\n\nconst binaryData =\n  await this.helpers.prepareBinaryData(\n    Buffer.from(content, 'utf8'),\n    filename,\n    'text/plain; charset=utf-8'\n  );\n\n\nreturn [{\n  json: {\n    filename,\n    findings_count: findings.length\n  },\n  binary: {\n    data: binaryData\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2112,
+        240
+      ],
+      "id": "62da09ba-892b-4902-93cc-c01e27ba06ba",
+      "name": "Build Findings TXT"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DISCORD_WEBHOOK_URL }}",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "files[0]",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "payload_json",
+              "value": "{\"content\":\"📄 Security scan findings — file TXT đính kèm.\"}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2dddf14b-d4de-4497-8324-40f25b95b307",
+      "name": "Send Discord TXT",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2400,
+        240
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Merge Scan Results": {
+      "main": [
+        [
+          {
+            "node": "Build Discord Embed",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build Findings TXT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Scan Form1": {
+      "main": [
+        [
+          {
+            "node": "Validate Inputs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scan Source": {
+      "main": [
+        [
+          {
+            "node": "Merge Scan Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scan Database": {
+      "main": [
+        [
+          {
+            "node": "Merge Scan Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Build Discord Embed": {
+      "main": [
+        [
+          {
+            "node": "Send Discord Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Inputs": {
+      "main": [
+        [
+          {
+            "node": "Scan Source",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Scan Database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Findings TXT": {
+      "main": [
+        [
+          {
+            "node": "Send Discord TXT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Discord TXT": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "d05979a0-4a36-4af5-a8b7-8f828cf0c84f",
+  "meta": {
+    "instanceId": "10f2e5baa9650cb6eaf036b8a43dec1f340958e15d3aefc30fee7c26092481da"
+  },
+  "nodeGroups": [],
+  "id": "FPmhONku2wOv4IY7",
+  "tags": [
+    "security-hardened"
+  ]
+}
