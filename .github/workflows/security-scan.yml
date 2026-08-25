@@ -21,6 +21,9 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
+      # ------------------------------------------------------------
+      # Check accidentally committed secrets
+      # ------------------------------------------------------------
       - name: Check repository secrets
         shell: bash
         run: |
@@ -28,23 +31,104 @@ jobs:
 
           echo "Checking repository for accidentally committed secrets..."
 
-          if grep -RniE \
-            'BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY|\
-AWS_SECRET_ACCESS_KEY[[:space:]]*=|\
-DISCORD_WEBHOOK|\
-api[_-]?key[[:space:]]*[:=][[:space:]]*["'\''][A-Za-z0-9_/+=-]{20,}|\
-password[[:space:]]*[:=][[:space:]]*["'\''][^"'\'']{8,}' \
-            --exclude-dir=.git \
-            --exclude-dir=data \
-            --exclude='*.md' \
-            .; then
+          python3 <<'PY'
+          import re
+          import sys
+          from pathlib import Path
 
-            echo "::error::Possible hard-coded secret detected."
-            exit 1
-          fi
+          root = Path(".")
 
-          echo "No obvious hard-coded secrets detected."
+          secret_patterns = [
+              (
+                  "Private key",
+                  re.compile(
+                      r"-----BEGIN (?:RSA|OPENSSH|EC|DSA|PGP) PRIVATE KEY-----"
+                  ),
+              ),
+              (
+                  "AWS access key",
+                  re.compile(
+                      r"\bAKIA[0-9A-Z]{16}\b"
+                  ),
+              ),
+              (
+                  "Discord webhook",
+                  re.compile(
+                      r"https://discord(?:app)?\.com/api/webhooks/[0-9]+/[A-Za-z0-9._-]+"
+                  ),
+              ),
+              (
+                  "Generic API key",
+                  re.compile(
+                      r"(?i)\bapi[_-]?key\s*[:=]\s*['\"][A-Za-z0-9_./+=-]{20,}['\"]"
+                  ),
+              ),
+              (
+                  "Generic password",
+                  re.compile(
+                      r"(?i)\bpassword\s*[:=]\s*['\"][^'\"]{8,}['\"]"
+                  ),
+              ),
+          ]
 
+          excluded_dirs = {
+              ".git",
+              "data",
+              "node_modules",
+              "__pycache__",
+          }
+
+          excluded_suffixes = {
+              ".md",
+              ".log",
+              ".sqlite",
+              ".sqlite-wal",
+              ".sqlite-shm",
+          }
+
+          findings = []
+
+          for path in root.rglob("*"):
+              if not path.is_file():
+                  continue
+
+              parts = set(path.parts)
+
+              if parts & excluded_dirs:
+                  continue
+
+              if path.suffix.lower() in excluded_suffixes:
+                  continue
+
+              try:
+                  text = path.read_text(
+                      encoding="utf-8",
+                      errors="ignore",
+                  )
+              except Exception:
+                  continue
+
+              for name, pattern in secret_patterns:
+                  if pattern.search(text):
+                      findings.append((str(path), name))
+
+          if findings:
+              print()
+              print("::error::Possible hard-coded secrets detected:")
+              print()
+
+              for path, kind in findings:
+                  print(f" - {kind}: {path}")
+
+              print()
+              sys.exit(1)
+
+          print("No obvious hard-coded secrets detected.")
+          PY
+
+      # ------------------------------------------------------------
+      # Validate shell scripts
+      # ------------------------------------------------------------
       - name: Validate shell scripts
         shell: bash
         run: |
@@ -55,6 +139,21 @@ password[[:space:]]*[:=][[:space:]]*["'\''][^"'\'']{8,}' \
 
           echo "Shell syntax validation passed."
 
+      # ------------------------------------------------------------
+      # Validate Python
+      # ------------------------------------------------------------
+      - name: Validate Python
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 -m py_compile scanner-api.py
+
+          echo "Python syntax validation passed."
+
+      # ------------------------------------------------------------
+      # Install dependencies
+      # ------------------------------------------------------------
       - name: Install scanner dependencies
         shell: bash
         run: |
@@ -67,14 +166,16 @@ password[[:space:]]*[:=][[:space:]]*["'\''][^"'\'']{8,}' \
             python3 -m pip install -r requirements.txt
           fi
 
+      # ------------------------------------------------------------
+      # Prepare clean test source
+      # ------------------------------------------------------------
       - name: Prepare test source
         shell: bash
         run: |
           set -euo pipefail
 
+          rm -rf ci-test-source
           mkdir -p ci-test-source
-
-          cp scan-source.sh ci-test-source/
 
           cat > ci-test-source/test-clean.php <<'PHP'
           <?php
@@ -84,17 +185,23 @@ password[[:space:]]*[:=][[:space:]]*["'\''][^"'\'']{8,}' \
           }
           PHP
 
+          echo "Clean test source prepared."
+
+      # ------------------------------------------------------------
+      # Run source scanner
+      # ------------------------------------------------------------
       - name: Run source security scanner
         shell: bash
         run: |
           set -euo pipefail
 
+          rm -rf ci-reports
           mkdir -p ci-reports
 
           bash scan-source.sh ci-test-source \
             > ci-reports/scan-source.json
 
-          python3 - <<'PY'
+          python3 <<'PY'
           import json
           import sys
 
@@ -103,31 +210,57 @@ password[[:space:]]*[:=][[:space:]]*["'\''][^"'\'']{8,}' \
           with open(path, "r", encoding="utf-8") as f:
               data = json.load(f)
 
+          print()
+          print("======================================")
+          print("       SECURITY SCANNER RESULT")
+          print("======================================")
+          print()
+
           print("Scanner version :", data.get("version"))
           print("Files scanned   :", data.get("files_scanned"))
           print("Summary         :", data.get("summary"))
 
           summary = data.get("summary", {})
+
           critical = int(summary.get("critical", 0))
-
-          if critical > 0:
-              print()
-              print("CRITICAL FINDINGS:")
-              for finding in data.get("critical_findings", []):
-                  print(
-                      "-",
-                      finding.get("relative_file")
-                      or finding.get("file")
-                  )
-
-              print()
-              print("Security scan failed because Critical findings were detected.")
-              sys.exit(1)
+          high = int(summary.get("high", 0))
+          medium = int(summary.get("medium", 0))
 
           print()
+          print(f"Critical : {critical}")
+          print(f"High     : {high}")
+          print(f"Medium   : {medium}")
+          print()
+
+          if critical > 0:
+              print("CRITICAL FINDINGS:")
+
+              findings = data.get("critical_findings", [])
+
+              for finding in findings:
+                  filename = (
+                      finding.get("relative_file")
+                      or finding.get("file")
+                      or "unknown"
+                  )
+
+                  print(f" - {filename}")
+
+              print()
+              print(
+                  "Security scan failed because "
+                  "Critical findings were detected."
+              )
+
+              sys.exit(1)
+
           print("No Critical findings detected.")
+          print("Security scan passed.")
           PY
 
+      # ------------------------------------------------------------
+      # Upload scan report
+      # ------------------------------------------------------------
       - name: Upload security report
         if: always()
         uses: actions/upload-artifact@v4
@@ -135,3 +268,12 @@ password[[:space:]]*[:=][[:space:]]*["'\''][^"'\'']{8,}' \
           name: security-scan-report
           path: ci-reports/
           retention-days: 14
+
+      # ------------------------------------------------------------
+      # Cleanup test files
+      # ------------------------------------------------------------
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          rm -rf ci-test-source
