@@ -1,0 +1,23 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Logs
+*.log
+
+# Temporary scan results
+scan-*.json
+*.tmp
+*.bak
+
+# OS
+.DS_Store
+Thumbs.db
