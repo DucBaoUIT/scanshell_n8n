@@ -64,9 +64,20 @@ jobs:
                   ),
               ),
               (
-                  "Generic password",
+                  "Possible hard-coded password",
                   re.compile(
-                      r"(?i)\bpassword\s*[:=]\s*['\"][^'\"]{8,}['\"]"
+                      r"""(?ix)
+                      \b
+                      (?:password|passwd|pwd)
+                      \s*
+                      (?:=|:)
+                      \s*
+                      ["']
+                      (?=[^"']{12,})
+                      (?!change[_-]?me|your[_-]?password|example|placeholder|password123)
+                      [^"']+
+                      ["']
+                      """
                   ),
               ),
           ]
